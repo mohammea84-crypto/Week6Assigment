@@ -172,3 +172,71 @@ G = Generator().to(device)
 D = Discriminator().to(device)
 print("Generator and Discriminator initialized.")
 
+
+
+# ============================================================
+# Step 5: Train Pix2Pix GAN
+# Commit: "Trained Pix2Pix GAN for satellite-to-map translation"
+# ============================================================
+
+# Loss functions
+adversarial_loss = nn.BCELoss()
+l1_loss          = nn.L1Loss()
+LAMBDA_L1        = 10  # Weight for L1 pixel-wise loss
+
+# Optimizers (Adam with lr=0.0002, β1=0.5 as in original paper)
+optimizer_G = optim.Adam(G.parameters(), lr=0.0002, betas=(0.5, 0.999))
+optimizer_D = optim.Adam(D.parameters(), lr=0.0002, betas=(0.5, 0.999))
+
+# Track losses per epoch for visualization
+g_losses, d_losses = [], []
+
+EPOCHS = 10
+print(f"\nStarting training for {EPOCHS} epochs...")
+
+for epoch in range(EPOCHS):
+    epoch_g, epoch_d = [], []
+
+    for sat_imgs, map_imgs in dataloader:
+        sat_imgs = sat_imgs.to(device)
+        map_imgs = map_imgs.to(device)
+
+        batch_size = sat_imgs.size(0)
+        real_label = torch.ones(batch_size, 1, 30, 30).to(device)
+        fake_label = torch.zeros(batch_size, 1, 30, 30).to(device)
+
+        # --- Train Discriminator ---
+        optimizer_D.zero_grad()
+        fake_map  = G(sat_imgs)
+        real_pred = D(sat_imgs, map_imgs)
+        fake_pred = D(sat_imgs, fake_map.detach())
+
+        d_real_loss = adversarial_loss(real_pred, real_label)
+        d_fake_loss = adversarial_loss(fake_pred, fake_label)
+        d_loss = (d_real_loss + d_fake_loss) * 0.5
+
+        d_loss.backward()
+        optimizer_D.step()
+
+        # --- Train Generator ---
+        optimizer_G.zero_grad()
+        fake_map  = G(sat_imgs)
+        fake_pred = D(sat_imgs, fake_map)
+
+        g_adv  = adversarial_loss(fake_pred, real_label)   # Fool discriminator
+        g_l1   = l1_loss(fake_map, map_imgs)               # Pixel-wise accuracy
+        g_loss = g_adv + LAMBDA_L1 * g_l1
+
+        g_loss.backward()
+        optimizer_G.step()
+
+        epoch_d.append(d_loss.item())
+        epoch_g.append(g_loss.item())
+
+    avg_d = np.mean(epoch_d)
+    avg_g = np.mean(epoch_g)
+    d_losses.append(avg_d)
+    g_losses.append(avg_g)
+    print(f"Epoch [{epoch+1}/{EPOCHS}]  D Loss: {avg_d:.4f}  G Loss: {avg_g:.4f}")
+
+print("Training complete.")
