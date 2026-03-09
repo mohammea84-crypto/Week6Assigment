@@ -81,7 +81,6 @@ plt.close()
 print("Saved sample_input.jpg")
 
 
-
 # ============================================================
 # Step 4: Implement Pix2Pix Generator (U-Net) and Discriminator (PatchGAN)
 # Commit: "Implemented Pix2Pix Generator and Discriminator models"
@@ -173,7 +172,6 @@ D = Discriminator().to(device)
 print("Generator and Discriminator initialized.")
 
 
-
 # ============================================================
 # Step 5: Train Pix2Pix GAN
 # Commit: "Trained Pix2Pix GAN for satellite-to-map translation"
@@ -201,15 +199,15 @@ for epoch in range(EPOCHS):
         sat_imgs = sat_imgs.to(device)
         map_imgs = map_imgs.to(device)
 
-        batch_size = sat_imgs.size(0)
-        real_label = torch.ones(batch_size, 1, 30, 30).to(device)
-        fake_label = torch.zeros(batch_size, 1, 30, 30).to(device)
-
         # --- Train Discriminator ---
         optimizer_D.zero_grad()
         fake_map  = G(sat_imgs)
         real_pred = D(sat_imgs, map_imgs)
         fake_pred = D(sat_imgs, fake_map.detach())
+
+        # Dynamically match label size to discriminator output (avoids hardcoded patch size)
+        real_label = torch.ones_like(real_pred).to(device)
+        fake_label = torch.zeros_like(real_pred).to(device)
 
         d_real_loss = adversarial_loss(real_pred, real_label)
         d_fake_loss = adversarial_loss(fake_pred, fake_label)
@@ -240,7 +238,6 @@ for epoch in range(EPOCHS):
     print(f"Epoch [{epoch+1}/{EPOCHS}]  D Loss: {avg_d:.4f}  G Loss: {avg_g:.4f}")
 
 print("Training complete.")
-
 
 
 # ============================================================
