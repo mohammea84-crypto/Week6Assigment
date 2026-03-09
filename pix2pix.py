@@ -240,3 +240,73 @@ for epoch in range(EPOCHS):
     print(f"Epoch [{epoch+1}/{EPOCHS}]  D Loss: {avg_d:.4f}  G Loss: {avg_g:.4f}")
 
 print("Training complete.")
+
+
+
+# ============================================================
+# Step 6: Evaluate and Visualize Results
+# Commit: "Evaluated Pix2Pix and visualized image translation"
+# ============================================================
+
+G.eval()
+
+# --- Output 1: Side-by-side translation sample ---
+with torch.no_grad():
+    test_sat, test_map = dataset[0]
+    fake = G(test_sat.unsqueeze(0).to(device)).squeeze(0).cpu()
+
+def to_img(t):
+    """Denormalize tensor [-1,1] → [0,1] numpy array."""
+    return (t.permute(1, 2, 0).numpy() * 0.5 + 0.5).clip(0, 1)
+
+fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+axes[0].imshow(to_img(test_sat));  axes[0].set_title("Input: Satellite");  axes[0].axis("off")
+axes[1].imshow(to_img(fake));      axes[1].set_title("Generated: Map");    axes[1].axis("off")
+axes[2].imshow(to_img(test_map));  axes[2].set_title("Ground Truth: Map"); axes[2].axis("off")
+plt.suptitle("Pix2Pix Translation Result", fontsize=13)
+plt.tight_layout()
+plt.savefig("sample.jpg", dpi=150)
+plt.close()
+print("Saved sample.jpg")
+
+
+# --- Output 2: Training Loss Curves (Generator vs Discriminator) ---
+epochs_range = range(1, EPOCHS + 1)
+
+fig, ax = plt.subplots(figsize=(8, 5))
+ax.plot(epochs_range, g_losses, "b-o", label="Generator Loss", linewidth=2, markersize=5)
+ax.plot(epochs_range, d_losses, "r-s", label="Discriminator Loss", linewidth=2, markersize=5)
+ax.set_xlabel("Epoch", fontsize=12)
+ax.set_ylabel("Loss", fontsize=12)
+ax.set_title("Pix2Pix GAN Training Loss Curves", fontsize=14)
+ax.legend(fontsize=11)
+ax.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.savefig("training_loss_curves.png", dpi=150)
+plt.close()
+print("Saved training_loss_curves.png")
+
+
+# --- Output 3: Pixel Intensity Distribution — Real vs Generated ---
+with torch.no_grad():
+    # Sample a batch to compare pixel distributions
+    sat_batch, map_batch = next(iter(dataloader))
+    fake_batch = G(sat_batch.to(device)).cpu()
+
+real_pixels = map_batch.numpy().flatten()
+fake_pixels = fake_batch.numpy().flatten()
+
+fig, ax = plt.subplots(figsize=(8, 5))
+ax.hist(real_pixels, bins=80, alpha=0.6, color="steelblue",  label="Real Map Pixels",      density=True)
+ax.hist(fake_pixels, bins=80, alpha=0.6, color="darkorange", label="Generated Map Pixels",  density=True)
+ax.set_xlabel("Pixel Intensity (normalized)", fontsize=12)
+ax.set_ylabel("Density", fontsize=12)
+ax.set_title("Pixel Intensity Distribution: Real vs Generated", fontsize=14)
+ax.legend(fontsize=11)
+ax.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.savefig("pixel_distribution.png", dpi=150)
+plt.close()
+print("Saved pixel_distribution.png")
+
+print("\nAll outputs saved: sample.jpg | training_loss_curves.png | pixel_distribution.png")
