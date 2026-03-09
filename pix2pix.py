@@ -26,15 +26,19 @@ transform = transforms.Compose([
 ])
 
 class SatMapDataset(Dataset):
-    """Paired satellite and map image dataset.
-    Expects ./data/satellite/ and ./data/map/ folders.
-    Falls back to synthetic data if folders are not found.
-    """
-    def __init__(self, sat_dir="./data/satellite", map_dir="./data/map", size=200):
-        self.use_synthetic = not (os.path.exists(sat_dir) and os.path.exists(map_dir))
-        self.size = size
+    """Paired satellite and map dataset.
 
-        if not self.use_synthetic:
+    Auto-detects layout:
+      1. data/satellite/ + data/map/ subfolders  -> paired by filename
+      2. data/*.jpg where image is wide (W > 1.5*H) -> split L=satellite, R=map
+      3. data/*.jpg regular images               -> used as both src & target (demo)
+      4. No data folder                          -> synthetic noise (demo)
+    """
+    def __init__(self, data_dir="./data", sat_dir="./data/satellite", map_dir="./data/map"):
+        self.mode = None
+
+        # Priority 1 - subfolders
+        if os.path.exists(sat_dir) and os.path.exists(map_dir):
             self.sat_imgs = sorted([
                 os.path.join(sat_dir, f) for f in os.listdir(sat_dir)
                 if f.lower().endswith(('.png', '.jpg', '.jpeg'))
@@ -44,28 +48,65 @@ class SatMapDataset(Dataset):
                 if f.lower().endswith(('.png', '.jpg', '.jpeg'))
             ])
             self.size = min(len(self.sat_imgs), len(self.map_imgs))
-            print(f"Loaded {self.size} image pairs from disk.")
+            self.mode = "subfolders"
+            print(f"Mode: subfolders - {self.size} pairs loaded.")
+
+        # Priority 2 - flat data/ folder
+        elif os.path.exists(data_dir):
+            self.img_paths = sorted([
+                os.path.join(data_dir, f) for f in os.listdir(data_dir)
+                if f.lower().endswith(('.png', '.jpg', '.jpeg'))
+            ])
+            self.size = len(self.img_paths)
+            if self.size == 0:
+                self.mode = "synthetic"
+                self.size = 200
+                print("data/ folder is empty - using synthetic data.")
+            else:
+                # Peek at first image to detect side-by-side paired format
+                sample = Image.open(self.img_paths[0])
+                w, h = sample.size
+                self.mode = "flat_paired" if w > h * 1.5 else "flat_single"
+                print(f"Mode: {self.mode} - {self.size} images found (each {w}x{h}px)")
+
+        # Priority 3 - no data at all
         else:
-            print("Data folders not found — using synthetic data for demo.")
+            self.mode = "synthetic"
+            self.size = 200
+            print("No data folder found - using synthetic data for demo.")
 
     def __len__(self):
         return self.size
 
     def __getitem__(self, idx):
-        if self.use_synthetic:
-            # Generate synthetic paired images (random noise as placeholder)
+        if self.mode == "synthetic":
+            # Random noise tensors as placeholder
             sat = torch.rand(3, 256, 256) * 2 - 1
             mp  = torch.rand(3, 256, 256) * 2 - 1
-        else:
+
+        elif self.mode == "subfolders":
             sat = transform(Image.open(self.sat_imgs[idx]).convert("RGB"))
             mp  = transform(Image.open(self.map_imgs[idx]).convert("RGB"))
+
+        elif self.mode == "flat_paired":
+            # Side-by-side image: left half = satellite, right half = map
+            img = Image.open(self.img_paths[idx]).convert("RGB")
+            w, h = img.size
+            sat = transform(img.crop((0, 0, w // 2, h)))
+            mp  = transform(img.crop((w // 2, 0, w, h)))
+
+        else:  # flat_single - use same image as both src and target (demo)
+            img = Image.open(self.img_paths[idx]).convert("RGB")
+            sat = transform(img)
+            mp  = transform(img)
+
         return sat, mp
 
 # DataLoader
 dataset    = SatMapDataset()
 dataloader = DataLoader(dataset, batch_size=8, shuffle=True)
 
-# Quick sanity check — display one sample pair
+# Quick sanity check - display one sample pair
 sat_sample, map_sample = dataset[0]
 
 fig, axes = plt.subplots(1, 2, figsize=(8, 4))
@@ -119,7 +160,7 @@ class Generator(nn.Module):
         # Bottleneck
         self.bottleneck = nn.Sequential(nn.Conv2d(512, 512, 4, 2, 1), nn.ReLU(True))
 
-        # Decoder (upsampling) — input channels doubled due to skip connections
+        # Decoder (upsampling) - input channels doubled due to skip connections
         self.d1 = UNetBlock(512,  512, down=False, dropout=True)
         self.d2 = UNetBlock(1024, 256, down=False)
         self.d3 = UNetBlock(512,  128, down=False)
@@ -152,14 +193,14 @@ class Discriminator(nn.Module):
         super().__init__()
         # Input: concatenated source + target (6 channels)
         self.model = nn.Sequential(
-            nn.Conv2d(6,   64,  4, 2, 1),         nn.LeakyReLU(0.2, True),
-            nn.Conv2d(64,  128, 4, 2, 1, bias=False), nn.BatchNorm2d(128), nn.LeakyReLU(0.2, True),
-            nn.Conv2d(128, 256, 4, 2, 1, bias=False), nn.BatchNorm2d(256), nn.LeakyReLU(0.2, True),
-            nn.Conv2d(256, 1,   4, 1, 1),          nn.Sigmoid()
+            nn.Conv2d(6,   64,  4, 2, 1),              nn.LeakyReLU(0.2, True),
+            nn.Conv2d(64,  128, 4, 2, 1, bias=False),  nn.BatchNorm2d(128), nn.LeakyReLU(0.2, True),
+            nn.Conv2d(128, 256, 4, 2, 1, bias=False),  nn.BatchNorm2d(256), nn.LeakyReLU(0.2, True),
+            nn.Conv2d(256, 1,   4, 1, 1),              nn.Sigmoid()
         )
 
     def forward(self, src, tgt):
-        # Concatenate source and target along channel axis
+        # Concatenate source and target along channel axis before discriminating
         return self.model(torch.cat([src, tgt], dim=1))
 
 
@@ -180,9 +221,9 @@ print("Generator and Discriminator initialized.")
 # Loss functions
 adversarial_loss = nn.BCELoss()
 l1_loss          = nn.L1Loss()
-LAMBDA_L1        = 10  # Weight for L1 pixel-wise loss
+LAMBDA_L1        = 10  # Weight for L1 pixel-wise loss (from original paper)
 
-# Optimizers (Adam with lr=0.0002, β1=0.5 as in original paper)
+# Optimizers (Adam with lr=0.0002, beta1=0.5 as in original paper)
 optimizer_G = optim.Adam(G.parameters(), lr=0.0002, betas=(0.5, 0.999))
 optimizer_D = optim.Adam(D.parameters(), lr=0.0002, betas=(0.5, 0.999))
 
@@ -205,7 +246,7 @@ for epoch in range(EPOCHS):
         real_pred = D(sat_imgs, map_imgs)
         fake_pred = D(sat_imgs, fake_map.detach())
 
-        # Dynamically match label size to discriminator output (avoids hardcoded patch size)
+        # Dynamically match label size to actual discriminator output shape
         real_label = torch.ones_like(real_pred).to(device)
         fake_label = torch.zeros_like(real_pred).to(device)
 
@@ -253,7 +294,7 @@ with torch.no_grad():
     fake = G(test_sat.unsqueeze(0).to(device)).squeeze(0).cpu()
 
 def to_img(t):
-    """Denormalize tensor [-1,1] → [0,1] numpy array."""
+    """Denormalize tensor [-1,1] to [0,1] numpy array for display."""
     return (t.permute(1, 2, 0).numpy() * 0.5 + 0.5).clip(0, 1)
 
 fig, axes = plt.subplots(1, 3, figsize=(12, 4))
@@ -271,7 +312,7 @@ print("Saved sample.jpg")
 epochs_range = range(1, EPOCHS + 1)
 
 fig, ax = plt.subplots(figsize=(8, 5))
-ax.plot(epochs_range, g_losses, "b-o", label="Generator Loss", linewidth=2, markersize=5)
+ax.plot(epochs_range, g_losses, "b-o", label="Generator Loss",     linewidth=2, markersize=5)
 ax.plot(epochs_range, d_losses, "r-s", label="Discriminator Loss", linewidth=2, markersize=5)
 ax.set_xlabel("Epoch", fontsize=12)
 ax.set_ylabel("Loss", fontsize=12)
@@ -284,9 +325,8 @@ plt.close()
 print("Saved training_loss_curves.png")
 
 
-# --- Output 3: Pixel Intensity Distribution — Real vs Generated ---
+# --- Output 3: Pixel Intensity Distribution - Real vs Generated ---
 with torch.no_grad():
-    # Sample a batch to compare pixel distributions
     sat_batch, map_batch = next(iter(dataloader))
     fake_batch = G(sat_batch.to(device)).cpu()
 
@@ -294,8 +334,8 @@ real_pixels = map_batch.numpy().flatten()
 fake_pixels = fake_batch.numpy().flatten()
 
 fig, ax = plt.subplots(figsize=(8, 5))
-ax.hist(real_pixels, bins=80, alpha=0.6, color="steelblue",  label="Real Map Pixels",      density=True)
-ax.hist(fake_pixels, bins=80, alpha=0.6, color="darkorange", label="Generated Map Pixels",  density=True)
+ax.hist(real_pixels, bins=80, alpha=0.6, color="steelblue",  label="Real Map Pixels",     density=True)
+ax.hist(fake_pixels, bins=80, alpha=0.6, color="darkorange", label="Generated Map Pixels", density=True)
 ax.set_xlabel("Pixel Intensity (normalized)", fontsize=12)
 ax.set_ylabel("Density", fontsize=12)
 ax.set_title("Pixel Intensity Distribution: Real vs Generated", fontsize=14)
